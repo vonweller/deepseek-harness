@@ -153,28 +153,40 @@ set "OCCUPIED="
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do set "OCCUPIED=1"
 if not defined OCCUPIED goto after_port_check
 
-echo [警告] 端口 %WEB_PORT% 已被以下进程占用:
+echo [信息] 端口 %WEB_PORT% 已被占用，正在识别占用进程:
+set "FOREIGN=0"
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do (
-    tasklist /fi "PID eq %%p" /fo csv /nh 2>nul
+    tasklist /fi "PID eq %%p" /fo csv /nh 2>nul | findstr /i /c:"node.exe" >nul
+    if errorlevel 1 (
+        echo [警告] 端口 %WEB_PORT% 被非 node 进程占用: PID %%p...
+        set "FOREIGN=1"
+    ) else (
+        echo [信息] 端口被 node 进程占用: PID %%p...
+    )
 )
-echo        可能是已在运行的 dsh web 或其他程序...
-set "CONFIRM="
-set /p "CONFIRM=是否结束占用进程并继续启动? [Y/N]: "
-if /i not "!CONFIRM!"=="Y" (
-    echo [失败] 端口 %WEB_PORT% 被占用，未获准结束进程...
+if "%FOREIGN%"=="1" (
+    echo [失败] 端口 %WEB_PORT% 被其他程序占用，不会自动结束...
     echo        修复方法: 换端口启动，例如 start-dsh.bat --port 8080...
     goto fail
 )
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do taskkill /pid %%p /f >nul 2>&1
-echo [信息] 等待端口释放...
-ping -n 3 127.0.0.1 >nul
+
+:: dsh web 的服务进程可能由父进程派生，仅结束监听进程会被重新拉起，
+:: 因此清理所有 dsh 相关 node 进程树，并循环确认端口真正释放。
+set "KILL_RETRY=0"
+:free_port_loop
 set "STILL_BUSY="
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do set "STILL_BUSY=1"
-if defined STILL_BUSY (
-    echo [失败] 结束进程后端口 %WEB_PORT% 仍被占用...
+if not defined STILL_BUSY goto after_port_check
+set /a KILL_RETRY+=1
+if %KILL_RETRY% gtr 5 (
+    echo [失败] 清理 %KILL_RETRY% 次后端口 %WEB_PORT% 仍被占用...
     echo        修复方法: 换端口启动，例如 start-dsh.bat --port 8080...
     goto fail
 )
+echo [信息] 结束旧的 dsh web 实例（第 %KILL_RETRY% 次）...
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'bin\.ts' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F | Out-Null }" >nul 2>&1
+ping -n 3 127.0.0.1 >nul
+goto free_port_loop
 
 :after_port_check
 
@@ -220,6 +232,9 @@ echo     --setup     强制重新安装依赖，默认仅在 node_modules 缺失
 echo     --headless  以 headless 模式启动 CLI，需要 DEEPSEEK_API_KEY...
 echo     --no-open   不自动打开浏览器（透传给 dsh web）...
 echo     --port ^<端口^>  指定 Web 服务端口（透传给 dsh web）...
+echo.
+echo   说明:
+echo     端口被旧 dsh 实例占用时自动结束重启，被其他程序占用时提示换端口...
 echo.
 echo   示例:
 echo     start-dsh.bat                       首次部署并启动 Web 界面

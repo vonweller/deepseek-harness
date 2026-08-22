@@ -15,6 +15,7 @@ echo.
 set "REBUILD=0"
 set "FORCE_SETUP=0"
 set "MODE=web"
+set "WEB_PORT=3080"
 set "DSH_ARGS="
 
 :parse_args
@@ -28,6 +29,7 @@ if /i "%~1"=="--rebuild" (
 ) else if /i "%~1"=="--help" (
     goto usage
 ) else (
+    if /i "%~1"=="--port" set "WEB_PORT=%~2"
     set "DSH_ARGS=!DSH_ARGS! %~1"
 )
 shift
@@ -145,31 +147,67 @@ if "%NEED_BUILD%"=="1" (
     echo [信息] 构建产物已存在，跳过构建（--rebuild 可强制重建）...
 )
 
+:: ---------- 端口占用检测（仅 Web 模式） ----------
+if not "%MODE%"=="web" goto after_port_check
+set "OCCUPIED="
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do set "OCCUPIED=1"
+if not defined OCCUPIED goto after_port_check
+
+echo [警告] 端口 %WEB_PORT% 已被以下进程占用:
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do (
+    tasklist /fi "PID eq %%p" /fo csv /nh 2>nul
+)
+echo        可能是已在运行的 dsh web 或其他程序...
+set "CONFIRM="
+set /p "CONFIRM=是否结束占用进程并继续启动? [Y/N]: "
+if /i not "!CONFIRM!"=="Y" (
+    echo [失败] 端口 %WEB_PORT% 被占用，未获准结束进程...
+    echo        修复方法: 换端口启动，例如 start-dsh.bat --port 8080...
+    goto fail
+)
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do taskkill /pid %%p /f >nul 2>&1
+echo [信息] 等待端口释放...
+ping -n 3 127.0.0.1 >nul
+set "STILL_BUSY="
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /c:":%WEB_PORT% " ^| findstr /c:"LISTENING"') do set "STILL_BUSY=1"
+if defined STILL_BUSY (
+    echo [失败] 结束进程后端口 %WEB_PORT% 仍被占用...
+    echo        修复方法: 换端口启动，例如 start-dsh.bat --port 8080...
+    goto fail
+)
+
+:after_port_check
+
 :: ---------- 启动 ----------
 echo.
-if "%MODE%"=="headless" (
-    echo [信息] 以 headless 模式启动（需要已配置 DEEPSEEK_API_KEY）...
-    call %PNPM% dsh --profile headless %DSH_ARGS%
-) else (
-    echo [信息] 正在启动 DeepSeek Harness Web 界面...
-    echo       默认地址: http://127.0.0.1:3080
-    echo       首次运行自动初始化配置目录，就绪后自动打开浏览器...
-    echo       停止服务: 在窗口内按 Ctrl+C...
-    echo.
-    call %PNPM% dsh web %DSH_ARGS%
-)
+if "%MODE%"=="headless" goto launch_headless
+echo [信息] 正在启动 DeepSeek Harness Web 界面...
+echo       默认地址: http://127.0.0.1:%WEB_PORT%
+echo       首次运行自动初始化配置目录，就绪后自动打开浏览器...
+echo       停止服务: 在窗口内按 Ctrl+C...
+echo.
+call %PNPM% dsh web %DSH_ARGS%
+goto after_launch
+
+:launch_headless
+echo [信息] 以 headless 模式启动（需要已配置 DEEPSEEK_API_KEY）...
+call %PNPM% dsh --profile headless %DSH_ARGS%
+
+:after_launch
 set "EXIT_CODE=%errorlevel%"
 if "%EXIT_CODE%"=="3221225786" (
     echo.
     echo [信息] 服务已手动停止（Ctrl+C）...
     set "EXIT_CODE=0"
+    exit /b 0
 )
 if not "%EXIT_CODE%"=="0" (
     echo.
     echo [失败] dsh 启动失败（退出码 %EXIT_CODE%）...
-    echo        修复方法: 查看上方错误输出...
+    echo        常见原因: 端口被占用 / 依赖缺失 / 构建产物损坏...
+    echo        修复方法: 查看上方错误输出，端口占用时可用 --port 换端口...
     echo        模型请求失败时，在界面 Settings 中配置 API Key...
-    echo        或设置环境变量 DEEPSEEK_API_KEY...
+    pause
 )
 exit /b %EXIT_CODE%
 

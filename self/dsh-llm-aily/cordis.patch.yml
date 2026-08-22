@@ -1,0 +1,11 @@
+# dsh-llm-aily — Aily 额度 LLM adapter, mounted as an out-of-tree profile bundle.
+#
+# Inserts the host-plane row that registers the `aily` provider on ctx.llm:
+# model calls route through the aily services API using the aily-blockly
+# account quota. The login token is not inlined: it resolves per request from
+# the aily-blockly `.aily` login file (or a `tokenFile` in the `llm-aily:`
+# settings section), refreshing itself when it nears expiry.
+# Exposed presets: Auto / Aily Max / Aily Fast.
+- insert:
+    - id: llm-aily
+      name: dsh-llm-aily
